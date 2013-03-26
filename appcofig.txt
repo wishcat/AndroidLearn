@@ -1,0 +1,192 @@
+package org.sipdroid.media.impl;
+
+import org.sipdroid.sipua.impl.UserAgent;
+import org.sipdroid.sipua.ui.Receiver;
+
+import android.util.Log;
+
+public class JitterImpl implements IJitter {
+
+	public static float good, late, lost, loss, loss2;
+	int seq;
+	double avgheadroom,devheadroom;
+	int avgcnt;
+	int maxjitter,minjitter,minjitteradjust;
+	int cnt,cnt2,user,luser,luser2,lserver;
+	public static int jitter,mu;
+	public RtpStreamReceiver rtpStreamReceiver;
+	int server, headroom, todo, len = 0, m = 1, expseq, getseq, vm = 1, gap, gseq;
+	public JitterImpl(RtpStreamReceiver rtpStreamReceiver)
+	{
+		this.rtpStreamReceiver=rtpStreamReceiver;
+	}
+	@Override
+	public void Init(int sampRate,int maxJitter) {
+		// TODO Auto-generated method stub
+		mu = sampRate/8000;
+		this.maxjitter = maxJitter;
+		android.util.Log.e("maxjittersize", ""+maxjitter);
+		if (maxjitter < 2*2*RtpStreamReceiver.BUFFER_SIZE*3*mu)
+			maxjitter = 2*2*RtpStreamReceiver.BUFFER_SIZE*3*mu;
+		Log.e("maxjitter:",""+maxjitter);
+		maxjitter /= 2*2;
+		minjitter = minjitteradjust = 500*mu;
+		jitter = 875*mu;
+		devheadroom = Math.pow(jitter/5, 2);
+		//timeout = 1;
+		
+		luser = luser2 = -8000*mu;
+		cnt = cnt2 = user = lserver = 0;
+	}
+
+	@Override
+	public int Clear() {
+		// TODO Auto-generated method stub
+		for (int i = maxjitter*2; i > 0; i -= RtpStreamReceiver.BUFFER_SIZE)
+			rtpStreamReceiver.write(rtpStreamReceiver.lin2,0,i>RtpStreamReceiver.BUFFER_SIZE?RtpStreamReceiver.BUFFER_SIZE:i);
+		cnt += maxjitter*2;
+		return 0;
+	}
+
+	@Override
+	public boolean IsContinue(int gseq) {
+		// TODO Auto-generated method stub
+		if (seq == gseq) {
+			 m++;
+			 return true;
+		 }
+		 gap = (gseq - seq) & 0xff;
+		 if (gap > 240)
+			 return true;
+		return false;
+	}
+
+	@Override
+	public void DoCount(int server) {
+		// TODO Auto-generated method stub
+		 headroom = user-server;
+		 Log.e("headroom:", "user is "+user+" server is"+server+" headroom is "+headroom+" jitter is "+jitter);
+		 if (headroom > 2*jitter)
+			 cnt += len;
+		 else
+			 cnt = 0;
+		 Log.e("cnt1","cnt is "+cnt	);
+		 if (lserver == server)
+			 cnt2++;
+		 else
+			 cnt2 = 0;
+	}
+
+	@Override
+	public boolean IsReDecode() {
+		// TODO Auto-generated method stub
+		if (cnt <= 500*mu || cnt2 >= 2 || headroom - jitter < len )
+		{
+			return true;
+		}
+		return false;
+	}
+
+	@Override
+	public void JudgeQS() {
+		// TODO Auto-generated method stub
+		if (seq != 0) {
+			 getseq = gseq&0xff;
+			 expseq = ++seq&0xff;
+			 if (m == RtpStreamSender.m) vm = m;
+			 gap = (getseq - expseq) & 0xff;
+			 if (gap > 0) {
+				 System.out.println("RTP:lost");
+				 if (gap > 100) gap = 1;
+				 loss += gap;
+				 lost += gap;
+				 good += gap - 1;
+				 loss2++;
+			 } else {
+				 if (m < vm) {
+					 loss++;
+					 loss2++;
+				 }
+			 }
+			 good++;
+			 if (good > 110) {
+				 good *= 0.99;
+				 lost *= 0.99;
+				 loss *= 0.99;
+				 loss2 *= 0.99;
+				 late *= 0.99;
+			 }
+		 }
+		 m = 1;
+		 seq = gseq;
+	}
+
+	private void NewJitter(boolean inc) {
+		// TODO Auto-generated method stub
+		 if (good == 0 || lost/good > 0.01 || rtpStreamReceiver.call_recorder != null)
+			 return;
+		 int newjitter = (int)Math.sqrt(devheadroom)*50 + (inc?minjitteradjust:0);
+		 if (newjitter < minjitter)
+			 newjitter = minjitter;
+		 if (newjitter > maxjitter)
+			 newjitter = maxjitter;
+		 if (!inc && (Math.abs(jitter-newjitter) < minjitteradjust || newjitter >= jitter))
+			 return;
+		 if (inc && newjitter <= jitter)
+			 return;
+		 jitter = newjitter;
+		 late = 0;
+		 avgcnt = 0;
+		 luser2 = user;
+		 Log.e("newjitter", "jitter size is:"+newjitter);
+	}
+	@Override
+	public void AdaptJitter() {
+		// TODO Auto-generated method stub
+		Log.e("avgheadroom", "avgheadroom:"+avgheadroom);
+		avgheadroom = avgheadroom * 0.99 + (double)headroom * 0.01;		
+		 if (avgcnt++ > 300)
+			 devheadroom = devheadroom * 0.999 + Math.pow(Math.abs(headroom - avgheadroom),2) * 0.001;
+		 if (headroom < 250*mu) { 
+			 late++;
+			 NewJitter(true);
+			 System.out.println("RTP:underflow "+(int)Math.sqrt(devheadroom));
+			 Log.e("underflow", "RTP:underflow "+Math.sqrt(devheadroom));
+			 todo = jitter - headroom;
+			 rtpStreamReceiver.write(rtpStreamReceiver.lin2,0,todo>RtpStreamReceiver.BUFFER_SIZE?RtpStreamReceiver.BUFFER_SIZE       :todo);
+		 }
+	}
+	@Override
+	public void Write(short[] data, int offset, int len) {
+		// TODO Auto-generated method stub
+		 if (cnt > 500*mu && cnt2 < 2) {
+			 todo = headroom - jitter;
+			 Log.e("todo", "todo:"+todo+" headroom:"+headroom+" jitter:"+jitter);
+			 if (todo < len)
+			 {
+				 Log.e("len1","len1:"+len+" todo:"+todo);
+				 rtpStreamReceiver.write(rtpStreamReceiver.lin,todo,len-todo);
+			 }
+		 } else
+			 rtpStreamReceiver.write(rtpStreamReceiver.lin,0,len);
+	}
+	@Override
+	public boolean IsAdaptVoleme() {
+		// TODO Auto-generated method stub	
+		boolean flag=false;
+		if (user >= luser + 8000*mu && (
+				 Receiver.call_state == UserAgent.UA_STATE_INCALL ||
+				 Receiver.call_state == UserAgent.UA_STATE_OUTGOING_CALL)) {
+			 if (luser == -8000*mu || RtpStreamReceiver.getMode() !=RtpStreamReceiver.speakermode) {
+				 flag=true;
+			 }
+			 luser = user;
+			 if (user >= luser2 + 160000*mu)
+				 NewJitter(false);
+		 }
+		 lserver = server;
+		return flag;
+	}
+
+
+}
